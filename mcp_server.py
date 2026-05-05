@@ -26,6 +26,9 @@ from zoneinfo import ZoneInfo
 import filetype
 import pymupdf
 import pymupdf4llm
+from fastmcp import FastMCP
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 
 # --- Custom Exceptions ---
 class MCPServerError(Exception):
@@ -391,6 +394,8 @@ class Tools:
         RATE_LIMIT_REQUESTS_PER_MINUTE: int = Field(default=10, ge=1, le=60)
         RATE_LIMIT_TIMEOUT_SECONDS: int = Field(default=60, ge=10, le=3600)
         CACHE_MAX_AGE_MINUTES: int = Field(default=30, ge=1, le=1440)
+        MCP_HTTP_HOST: str = Field(default="0.0.0.0")
+        MCP_HTTP_PORT: str = Field(default="8080")
         
         @validator('SEARXNG_ENGINE_API_BASE_URL')
         def validate_searxng_url(cls, v):
@@ -432,7 +437,7 @@ class Tools:
         except Exception as e:
             logger.error(f"Failed to save config: {e}")
 
-    def __init__(self, send_notification_func: Callable[[str, Any], Awaitable[None]]):
+    def __init__(self, send_notification_func: Optional[Callable[[str, Any], Awaitable[None]]] = None):
         """
         Initialize the Tools class with configuration from script defaults, config file, and environment variables.
         Configuration is loaded in the following priority order:
@@ -444,6 +449,11 @@ class Tools:
         - It doesn't exist yet (first-time initialization)
         - Environment variables are explicitly provided for this run
         """
+        if send_notification_func is None:
+            async def _noop(method: str, params: Any) -> None:
+                pass
+            send_notification_func = _noop
+
         # 1. Load defaults from script
         script_defaults = self.Valves().dict()
         
@@ -868,6 +878,40 @@ class Tools:
         formatted_datetime = now_desired.strftime("%A, %B %d, %Y at %I:%M %p (%Z)")
         return f"The current date and time is {formatted_datetime}"
 
+# --- FastMCP HTTP Server ---
+_fastmcp = FastMCP("mcp-searxng-enhanced", version="1.1.0")
+_http_tools: Optional[Tools] = None
+
+def _get_http_tools() -> Tools:
+    global _http_tools
+    if _http_tools is None:
+        _http_tools = Tools()
+    return _http_tools
+
+@_fastmcp.tool(
+    description="Search the web for various categories (general, images, videos, files, map, social media, news, it, science). Scrapes text for web categories, returns specific data for others. Provides citations. Allows optional filtering. Is able to read PDF files and convert to Markdown."
+)
+async def search_web(
+    query: str,
+    engines: Optional[str] = None,
+    category: str = "general",
+    safesearch: Optional[str] = None,
+    time_range: Optional[str] = None,
+) -> str:
+    return await _get_http_tools().search_web(query, engines, category, safesearch, time_range)
+
+@_fastmcp.tool(
+    description="Scrape content from web pages (using Trafilatura, converting Reddit to old.reddit). Caches results and provides citations. Is able to read PDF files and convert these to Markdown."
+)
+async def get_website(url: str) -> str:
+    return await _get_http_tools().get_website(url)
+
+@_fastmcp.tool(
+    description="Get the current date and time in the configured timezone."
+)
+def get_current_datetime() -> str:
+    return _get_http_tools().get_current_datetime()
+
 # --- JSON-RPC Communication ---
 async def send_json_rpc(data: Dict[str, Any]):
     message_str = json.dumps(data)
@@ -1049,11 +1093,32 @@ async def main():
     logger.info("MCP Server exiting.")
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received, exiting.")
-        sys.exit(0)
-    except Exception as e:
-        logging.critical(f"Fatal error starting server: {e}", exc_info=True)
-        sys.exit(1)
+    if "--http" in sys.argv:
+        http_host = os.getenv("MCP_HTTP_HOST", "0.0.0.0")
+        http_port = int(os.getenv("MCP_HTTP_PORT", "8000"))
+        _get_http_tools()  # eagerly init so config file is written on start
+        logger.info(f"Starting FastMCP HTTP server on {http_host}:{http_port}/mcp")
+        _fastmcp.run(
+            transport="http",
+            host=http_host,
+            port=http_port,
+            path="/mcp",
+            stateless_http=True,
+            middleware=[
+                Middleware(
+                    CORSMiddleware,
+                    allow_origins=["*"],
+                    allow_methods=["*"],
+                    allow_headers=["*"],
+                )
+            ],
+        )
+    else:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            logger.info("KeyboardInterrupt received, exiting.")
+            sys.exit(0)
+        except Exception as e:
+            logging.critical(f"Fatal error starting server: {e}", exc_info=True)
+            sys.exit(1)

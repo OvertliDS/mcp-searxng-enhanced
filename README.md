@@ -87,6 +87,69 @@ The following is the **recommended default configuration** for this server withi
 - Refer to the "Environment Variables" table below for a detailed description of each variable and its default.
 - The server's behavior is primarily controlled by these environment variables. While an `ods_config.json` file can also influence settings (see Configuration Management), environment variables passed by the MCP client take precedence.
 
+## HTTP Server Mode (FastMCP)
+
+In addition to the default stdio transport, the server can expose an MCP endpoint over HTTP using [FastMCP](https://github.com/jlowin/fastmcp). This is useful for clients that connect via HTTP rather than spawning a subprocess.
+
+### Starting the HTTP Server
+
+```bash
+python mcp_server.py --http
+```
+
+The server will start on `0.0.0.0:8000` by default and accept MCP requests at:
+
+```
+http://<host>:<port>/mcp
+```
+
+All origins are allowed (CORS is fully open), so the endpoint is accessible from any client or browser-based tool.
+
+### HTTP Server Environment Variables
+
+| Variable         | Description                        | Default     |
+|------------------|------------------------------------|-------------|
+| `MCP_HTTP_HOST`  | Host address to bind to            | `0.0.0.0`   |
+| `MCP_HTTP_PORT`  | Port to listen on                  | `8000`      |
+
+**Example — custom host and port:**
+
+```bash
+MCP_HTTP_HOST=127.0.0.1 MCP_HTTP_PORT=9000 python mcp_server.py --http
+```
+
+**Windows (Command Prompt):**
+```cmd
+set MCP_HTTP_HOST=127.0.0.1
+set MCP_HTTP_PORT=9000
+python mcp_server.py --http
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:MCP_HTTP_HOST="127.0.0.1"
+$env:MCP_HTTP_PORT="9000"
+python mcp_server.py --http
+```
+
+### Connecting an MCP Client via HTTP
+
+Point your MCP client at the `/mcp` endpoint:
+
+```json
+{
+  "mcpServers": {
+    "mcp-searxng-enhanced-http": {
+      "url": "http://localhost:8000/mcp"
+    }
+  }
+}
+```
+
+> **Note:** All server configuration variables (`SEARXNG_ENGINE_API_BASE_URL`, `DESIRED_TIMEZONE`, etc.) apply in HTTP mode exactly as they do in stdio mode. The `ods_config.json` file is written at startup before the server begins accepting connections.
+
+---
+
 ## Running Natively (Without Docker)
 
 If you prefer to run the server directly using Python without Docker, follow these steps:
@@ -123,7 +186,7 @@ If you prefer to run the server directly using Python without Docker, follow the
      ```bash
      pip install -r requirements.txt
      ```
-     Key dependencies include `httpx`, `BeautifulSoup4`, `pydantic`, `trafilatura`, `python-dateutil`, `cachetools`, `zoneinfo`, `filetype`, `pymupdf` and `pymupdf4llm`.
+     Key dependencies include `httpx`, `BeautifulSoup4`, `pydantic`, `trafilatura`, `python-dateutil`, `cachetools`, `zoneinfo`, `filetype`, `pymupdf`, `pymupdf4llm`, and `fastmcp`.
 
 **5. Ensure SearXNG is Accessible:**
    - You still need a running SearXNG instance. Make sure you have its API base URL (e.g., `http://127.0.0.1:8080/search`).
@@ -148,11 +211,17 @@ If you prefer to run the server directly using Python without Docker, follow the
    - Refer to the "Environment Variables" table below for all available options. If not set, defaults from the script or an `ods_config.json` file (if present in the root directory or at `ODS_CONFIG_PATH`) will be used.
 
 **7. Run the Server:**
-   - Execute the Python script:
+   - **stdio mode** (default — for MCP clients that spawn a subprocess):
      ```bash
      python mcp_server.py
      ```
-   - The server will start and listen for MCP client connections via stdin/stdout.
+     The server listens for MCP client connections via stdin/stdout.
+
+   - **HTTP mode** (for MCP clients that connect via HTTP):
+     ```bash
+     python mcp_server.py --http
+     ```
+     The server starts a FastMCP HTTP endpoint at `http://0.0.0.0:8000/mcp`. See [HTTP Server Mode](#http-server-mode-fastmcp) for configuration options.
 
 **8. Configuration File (`ods_config.json`):**
    - Alternatively, or in combination with environment variables, you can create an `ods_config.json` file in the project's root directory (or the path specified by the `ODS_CONFIG_PATH` environment variable). Environment variables will always take precedence over values in this file. Example:
@@ -170,6 +239,8 @@ The following environment variables control the server's behavior. You can set t
 | Variable                        | Description                                | Default (from Dockerfile)         | Notes                                                                                                |
 |---------------------------------|--------------------------------------------|-----------------------------------|------------------------------------------------------------------------------------------------------|
 | `SEARXNG_ENGINE_API_BASE_URL`   | SearXNG search endpoint                    | `http://host.docker.internal:8080/search` | **Crucial for server operation**                                                                     |
+| `MCP_HTTP_HOST`                 | Bind address for HTTP server mode          | `0.0.0.0`                         | Only used when starting with `--http`                                                               |
+| `MCP_HTTP_PORT`                 | Port for HTTP server mode                  | `8000`                            | Only used when starting with `--http`                                                               |
 | `DESIRED_TIMEZONE`              | Timezone for date/time tool                | `America/New_York`                | E.g., `America/Los_Angeles`. List of tz database time zones: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones |
 | `ODS_CONFIG_PATH`               | Path to persistent configuration file      | `/config/ods_config.json`         | Typically left as default within the container.     |
 | `RETURNED_SCRAPPED_PAGES_NO`    | Max pages to return per search             | `3`                               |                                                       |
@@ -293,6 +364,8 @@ Errors are properly propagated to the client with informative messages.
 - **Rate limit errors**: Adjust `RATE_LIMIT_REQUESTS_PER_MINUTE` if you're experiencing too many rate limit errors.
 - **Slow content extraction**: Increase `TRAFILATURA_TIMEOUT` to allow more time for content processing on complex pages.
 - **Docker networking issues**: If using Docker Desktop on Windows/Mac, `host.docker.internal` should resolve to the host machine. On Linux, you may need to use the host's IP address instead.
+- **HTTP mode not reachable**: Ensure no firewall is blocking `MCP_HTTP_PORT` (default `8000`). Set `MCP_HTTP_HOST=0.0.0.0` to bind on all interfaces, or `127.0.0.1` to restrict to localhost only.
+- **HTTP mode session ID error**: The server runs in stateless HTTP mode — each POST to `/mcp` is self-contained. If your client requires session-based transport, switch to stdio mode instead.
 
 ## Acknowledgements
 
